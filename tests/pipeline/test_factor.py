@@ -20,7 +20,7 @@ from numpy import (
     rot90,
     where,
 )
-from numpy.random import randn, seed
+from numpy.random import randn, seed, RandomState
 import pandas as pd
 from scipy.stats.mstats import winsorize as scipy_winsorize
 
@@ -35,6 +35,7 @@ from zipline.pipeline.factors import (
     DailyReturns,
     Returns,
 )
+from zipline.pipeline.factors.factor import winsorize as zp_winsorize
 from zipline.testing import (
     check_allclose,
     check_arrays,
@@ -697,21 +698,23 @@ class FactorTestCase(BasePipelineTestCase):
         c = C()
         str_c = C(dtype=categorical_dtype, missing_value=None)
 
+        # Last three columns are used to ensure that we correctly ignore NaN
+        # values when calculating percentiles.
         factor_data = array([
-            [1.,     2.,  3.,  4.,   5.,   6.],
-            [1.,     8., 27., 64., 125., 216.],
-            [6.,     5.,  4.,  3.,   2.,   1.]
+            [1.,     2.,  3.,  4.,   5.,   6., nan, nan, nan],
+            [1.,     8., 27., 64., 125., 216., nan, nan, nan],
+            [6.,     5.,  4.,  3.,   2.,   1., nan, nan, nan]
         ])
         filter_data = array(
-            [[False, True, True, True, True, True],
-             [True, False, True, True, True, True],
-             [True, True, False, True, True, True]],
+            [[False, True, True, True, True, True, True, True, True],
+             [True, False, True, True, True, True, True, True, True],
+             [True, True, False, True, True, True, True, True, True]],
             dtype=bool,
         )
         classifier_data = array(
-            [[1, 1, 1, 2, 2, 2],
-             [1, 1, 1, 2, 2, 2],
-             [1, 1, 1, 2, 2, 2]],
+            [[1, 1, 1, 2, 2, 2, 1, 2, 1],
+             [1, 1, 1, 2, 2, 2, 1, 2, 1],
+             [1, 1, 1, 2, 2, 2, 1, 2, 1]],
             dtype=int64_dtype,
         )
         string_classifier_data = LabelArray(
@@ -762,34 +765,34 @@ class FactorTestCase(BasePipelineTestCase):
         }
         expected = {
             'winsor_1': array([
-                [2.,    2.,    3.,    4.,    5.,    5.],
-                [8.,    8.,   27.,   64.,  125.,  125.],
-                [5.,    5.,    4.,    3.,    2.,    2.]
+                [2.,    2.,    3.,    4.,    5.,    5., nan, nan, nan],
+                [8.,    8.,   27.,   64.,  125.,  125., nan, nan, nan],
+                [5.,    5.,    4.,    3.,    2.,    2., nan, nan, nan],
             ]),
             'winsor_2': array([
-                [3.0,    3.,    3.,    4.,    5.,    6.],
-                [27.,   27.,   27.,   64.,  125.,  216.],
-                [6.0,    5.,    4.,    3.,    3.,    3.]
+                [3.0,    3.,    3.,    4.,    5.,    6., nan, nan, nan],
+                [27.,   27.,   27.,   64.,  125.,  216., nan, nan, nan],
+                [6.0,    5.,    4.,    3.,    3.,    3., nan, nan, nan],
             ]),
             'winsor_3': array([
-                [1.,    2.,    3.,    4.,    5.,    5.],
-                [1.,    8.,   27.,   64.,  125.,  125.],
-                [5.,    5.,    4.,    3.,    2.,    1.]
+                [1.,    2.,    3.,    4.,    5.,    5., nan, nan, nan],
+                [1.,    8.,   27.,   64.,  125.,  125., nan, nan, nan],
+                [5.,    5.,    4.,    3.,    2.,    1., nan, nan, nan],
             ]),
             'masked': array([
-                [nan,    3.,    3.,    4.,    5.,    5.],
-                [27.,   nan,   27.,   64.,  125.,  125.],
-                [5.0,    5.,    nan,    3.,    2.,   2.]
+                [nan,    3.,    3.,    4.,    5.,    5., nan, nan, nan],
+                [27.,   nan,   27.,   64.,  125.,  125., nan, nan, nan],
+                [5.0,    5.,    nan,    3.,    2.,   2., nan, nan, nan],
             ]),
             'grouped': array([
-                [2.,    2.,    2.,    5.,    5.,    5.],
-                [8.,    8.,    8.,  125.,  125.,  125.],
-                [5.,    5.,    5.,    2.,    2.,    2.]
+                [2.,    2.,    2.,    5.,    5.,    5., nan, nan, nan],
+                [8.,    8.,    8.,  125.,  125.,  125., nan, nan, nan],
+                [5.,    5.,    5.,    2.,    2.,    2., nan, nan, nan],
             ]),
             'grouped_masked': array([
-                [nan,    2.,    3.,    5.,    5.,    5.],
-                [1.0,   nan,   27.,  125.,  125.,  125.],
-                [6.0,    5.,    nan,    2.,    2.,   2.]
+                [nan,    2.,    3.,    5.,    5.,    5., nan, nan, nan],
+                [1.0,   nan,   27.,  125.,  125.,  125., nan, nan, nan],
+                [6.0,    5.,    nan,    2.,    2.,   2., nan, nan, nan],
             ]),
         }
         # Changing the classifier dtype shouldn't affect anything.
@@ -807,6 +810,58 @@ class FactorTestCase(BasePipelineTestCase):
             },
             mask=self.build_mask(self.ones_mask(shape=factor_data.shape)),
             check=partial(check_allclose, atol=0.001),
+        )
+
+    def test_winsorize_nans(self):
+        # 5 low non-nan values, then some nans, then 5 high non-nans.
+        data = array([4.0, 3.0, 0.0, 1.0, 2.0,
+                      nan, nan, nan,
+                      9.0, 5.0, 6.0, 8.0, 7.0])
+
+        # Winsorize both tails at 10%.
+        # 0.0 -> 1.0
+        # 9.0 -> 8.0
+        result = zp_winsorize(data, 0.10, 0.90)
+        expected = array([4.0, 3.0, 1.0, 1.0, 2.0,
+                          nan, nan, nan,
+                          8.0, 5.0, 6.0, 8.0, 7.0])
+        assert_equal(result, expected)
+
+        # Winsorize both tails at 20%.
+        # 0.0 and 1.0 -> 2.0
+        # 9.0 and 8.0 -> 7.0
+        result = zp_winsorize(data, 0.20, 0.80)
+        expected = array([4.0, 3.0, 2.0, 2.0, 2.0,
+                          nan, nan, nan,
+                          7.0, 5.0, 6.0, 7.0, 7.0])
+        assert_equal(result, expected)
+
+        # Winsorize just the upper tail.
+        result = zp_winsorize(data, 0, 0.8)
+        expected = array([4.0, 3.0, 0.0, 1.0, 2.0,
+                          nan, nan, nan,
+                          7.0, 5.0, 6.0, 7.0, 7.0])
+        assert_equal(result, expected)
+
+        # Winsorize just the lower tail.
+        result = zp_winsorize(data, 0.2, 1.0)
+        expected = array([4.0, 3.0, 2.0, 2.0, 2.0,
+                          nan, nan, nan,
+                          9.0, 5.0, 6.0, 8.0, 7.0])
+        assert_equal(result, expected)
+
+    @parameter_space(seed=[0, 1, 2], __fail_fast=True)
+    def test_winsorize_randomized(self, seed):
+        state = RandomState(seed)
+        data = state.randn(50)
+        data[:5] = nan
+
+        # Permuting and then winsorizing should be the same as winsorizing and
+        # then permuting.
+        permutation = state.permutation(50)
+        assert_equal(
+            zp_winsorize(data[permutation], 0.1, 0.9),
+            zp_winsorize(data, 0.1, 0.9)[permutation],
         )
 
     def test_winsorize_bad_bounds(self):
